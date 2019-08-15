@@ -111,12 +111,16 @@ size_t fread_big(
 
 		// Perform the big endian swap. However this is only done
 		// on integer values (2, 3 & 4 bytes).
-		if (size >= 2 && size <= 4) {
+		if (size == 2 || size == 4) {
 			for (int i = 0; i < (size >> 1); ++i) {
 				uint8_t tmp = p[size - 1 - i];
 				p[size - 1 - i] = p[i];
 				p[i] = tmp;
 			}
+		} else if (size == 3) {
+			uint8_t tmp = p[0];
+			p[0] = p[2];
+			p[2] = tmp;
 		}
 
 		// Advance to the next memory location.
@@ -401,7 +405,7 @@ int resource_file_parse_resources(
 				snprintf(rf_error, sizeof(rf_error), "Failed to read resource data offset.");
 				return RF_PARSE;
 			}
-			rf->rsrc.resources[j].data_offset = (offset_raw[0] << 16) | (offset_raw[1] << 8) | (offset_raw[0]);
+			rf->rsrc.resources[j].data_offset = (offset_raw[2] << 16) | (offset_raw[1] << 8) | (offset_raw[0]);
 			
 			// Now that all of the resource fields have been extracted, find and parse the name
 			// of the resource. However if the name offset is 0xFFFF, then we know there is no
