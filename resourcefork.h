@@ -20,6 +20,8 @@
  * SOFTWARE.
  */
 
+#include <stdint.h>
+
 #if !defined(libResourceFork)
 #define libResourceFork
 
@@ -32,6 +34,8 @@ typedef struct resource_file *resource_file_t;
 #define RF_FILE			1
 #define RF_PARSE		2
 #define RF_COMPRESSED	3
+#define RF_TYPE 		4
+#define RF_RESOURCE 	5
 
 // MARK: - Function Declarations
 int resource_file_open(resource_file_t *, const char *restrict);
@@ -39,5 +43,44 @@ void resource_file_close(resource_file_t);
 void resource_file_free(resource_file_t);
 
 int resource_file_parse(resource_file_t);
+
+int resource_file_get_type_count(resource_file_t rf, int *count);
+
+int resource_file_get_resource_count_idx(
+	resource_file_t rf, 
+	int type, 
+	int *count
+);
+
+int resource_file_get_resource_count(
+	resource_file_t rf, 
+	const char *type_code, 
+	int *count
+);
+
+int resource_file_get_type_code(
+	resource_file_t rf, 
+	int type, 
+	const char **code
+);
+
+int resource_file_get_resource_idx(
+	resource_file_t rf, 
+	int type, 
+	int resource, 
+	int16_t *id, 
+	const char **name,
+	uint8_t *data,
+	uint32_t *size
+);
+
+int resource_file_get_resource(
+	resource_file_t rf, 
+	const char *type_code, 
+	int16_t id, 
+	const char **name,
+	uint8_t *data,
+	uint32_t *size
+);
 
 #endif

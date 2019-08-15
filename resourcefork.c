@@ -21,7 +21,7 @@
  */
 
 #include "resourcefork.h"
-#include "libEncoding/macroman.h"
+#include <libEncoding/macroman.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -30,7 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// MARK: - Debug/Test App
+// MARK: - Global Variables
 
 char rf_error[1024] = {0};
 
@@ -64,6 +64,7 @@ struct resource_type {
 	const char *code;
 	uint16_t resource_count;
 	uint16_t resource_offset;
+	uint32_t resource_index;
 };
 
 struct resource {
@@ -71,6 +72,8 @@ struct resource {
 	const char *name;
 	uint8_t flags;
 	uint32_t data_offset;
+	uint32_t data_size;
+	void *data;
 };
 
 struct resource_fork {
@@ -363,15 +366,20 @@ int resource_file_parse_resources(
 	rf->rsrc.resources = calloc(rf->rsrc.resource_count + 1, sizeof(*rf->rsrc.resources));
 
 	// Move to the appropriate location in the file, and begin loading the resources.
+	int index_offset = 0;
 	for (int i = 0; i <= rf->rsrc.type_count; ++i) {
 		int offset = rf->rsrc.types[i].resource_offset;
 		fseek(rf->handle, 
 			  rf->rsrc.preamble.map_offset + rf->rsrc.map.type_list_offset + offset, 
 			  SEEK_SET);
 
+		// Update the initial resource index in the type structure for quick lookup
+		// later.
+		rf->rsrc.types[i].resource_index = index_offset;
+
 		// Read each of the resources. This involves parsing out the appropriate data
 		// and inserting it into each of the allocated resource records.
-		for (int j = offset, k = 0; k <= rf->rsrc.types[i].resource_count; ++k, ++j) {
+		for (int j = index_offset, k = 0; k <= rf->rsrc.types[i].resource_count; ++k, ++j, ++index_offset) {
 			if (fread_big(&rf->rsrc.resources[j].id, sizeof(int16_t), 1, rf->handle) != 1) {
 				snprintf(rf_error, sizeof(rf_error), "Failed to read resource id.");
 				return RF_PARSE;
@@ -418,10 +426,37 @@ int resource_file_parse_resources(
 				fseek(rf->handle, cur_pos, SEEK_SET);
 			}
 
+			// Finally try to load the data into memory for the resource.
+			{
+				// Seek to the beginning of the data and query the length of the
+				// data.
+				long cur_pos = ftell(rf->handle);
+				fseek(
+					rf->handle, 
+					rf->rsrc.resources[j].data_offset + rf->rsrc.preamble.data_offset, 
+					SEEK_SET
+				);
+
+				if (fread_big(&rf->rsrc.resources[j].data_size, sizeof(uint32_t), 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource data size.");
+					return RF_PARSE;
+				}
+
+				rf->rsrc.resources[j].data = malloc(rf->rsrc.resources[j].data_size);
+				if (fread(rf->rsrc.resources[j].data, 1, rf->rsrc.resources[j].data_size, rf->handle) != rf->rsrc.resources[j].data_size) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource data.");
+					return RF_PARSE;
+				}
+
+				// Restore the old position.
+				fseek(rf->handle, cur_pos, SEEK_SET);
+			}
+
 #if defined(DEBUG_TEST)
-			printf("  '%s' %d: %s (%#06x)\n", 
+			printf("  '%s' %d: %s (%#06x) [%d/%d] {%d bytes}\n", 
 					rf->rsrc.types[i].code, rf->rsrc.resources[j].id, 
-					rf->rsrc.resources[j].name, rf->rsrc.resources[j].data_offset);
+					rf->rsrc.resources[j].name, rf->rsrc.resources[j].data_offset,
+					j, rf->rsrc.resource_count, rf->rsrc.resources[j].data_size);
 #endif
 
 			// Skip over the next 4 bytes.
@@ -462,3 +497,111 @@ RSRC_PARSE_ERROR:
 	return RF_PARSE;	
 }
 
+// MARK: - Resource Fork Look Up
+
+int resource_file_get_type_count(resource_file_t rf, int *count)
+{
+	if (count) {
+		*count = (int)rf->rsrc.type_count + 1;
+	}
+	return RF_OK;
+}
+
+int resource_file_get_resource_count_idx(resource_file_t rf, int type, int *count)
+{
+	// Fetch the actual resource type record.
+	struct resource_type *type_ptr = &rf->rsrc.types[type];
+	if (count) {
+		*count = (int)type_ptr->resource_count + 1;
+	}
+	return RF_OK;
+}
+
+int resource_file_get_resource_count(
+	resource_file_t rf, 
+	const char *type_code, 
+	int *count
+) {
+	// Determine the index of the type given the code provided.
+	for (int i = 0; i <= rf->rsrc.type_count; ++i) {
+		struct resource_type *type_ptr = &rf->rsrc.types[i];
+		if (strcmp(type_ptr->code, type_code) == 0) {
+			if (count) {
+				*count = (int)type_ptr->resource_count + 1;
+			}
+			return RF_OK;
+		}
+	}
+	return RF_TYPE;
+}
+
+int resource_file_get_type_code(resource_file_t rf, int type, const char **code)
+{
+	struct resource_type *type_ptr = &rf->rsrc.types[type];
+	if (code) {
+		*code = type_ptr->code;
+	}
+	return RF_OK;
+}
+
+int resource_file_get_resource_idx(
+	resource_file_t rf, 
+	int type, 
+	int resource, 
+	int16_t *id, 
+	const char **name,
+	uint8_t *data,
+	uint32_t *size
+) {
+	// Look up the type and then handle the resource index offset.
+	struct resource_type *type_ptr = &rf->rsrc.types[type];
+	resource += type_ptr->resource_index;
+
+	// Look up the actual resource instance now
+	struct resource *resource_ptr = &rf->rsrc.resources[resource];
+
+	if (id) {
+		*id = resource_ptr->id;
+	}
+
+	if (*name) {
+		*name = resource_ptr->name;
+	}
+
+	return RF_OK;
+}
+
+int resource_file_get_resource(
+	resource_file_t rf, 
+	const char *type_code, 
+	int16_t id, 
+	const char **name,
+	uint8_t *data,
+	uint32_t *size
+) {
+	struct resource_type *type_ptr = NULL;
+	struct resource *resource_ptr = NULL;
+	for (int type_idx = 0; type_idx <= rf->rsrc.type_count; ++type_idx) {
+		type_ptr = &rf->rsrc.types[type_idx];
+		if (strcmp(type_ptr->code, type_code) == 0) {
+			goto RESOURCE_TYPE_FOUND;
+		}
+	}
+	return RF_TYPE;
+
+RESOURCE_TYPE_FOUND:
+	for (int res_idx = 0; res_idx <= type_ptr->resource_count; ++res_idx) {
+		resource_ptr = &rf->rsrc.resources[type_ptr->resource_index + res_idx];
+		if (resource_ptr->id == id) {
+			goto RESOURCE_FOUND;
+		}
+	}
+	return RF_RESOURCE;
+
+RESOURCE_FOUND:
+	if (name) {
+		*name = resource_ptr->name;
+	}
+
+	return RF_OK;
+}
