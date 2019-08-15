@@ -1,3 +1,6 @@
 [submodule "libEncoding"]
 	path = libEncoding
 	url = https://github.com/TheDiamondProject/libEncoding.git
+[submodule "libUnit"]
+	path = libUnit
+	url = https://github.com/TheDiamondProject/libUnit.git
