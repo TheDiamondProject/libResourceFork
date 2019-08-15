@@ -40,6 +40,8 @@ int main(int argc, const char **argv)
 	resource_file_t rf = NULL;
 	if (resource_file_open(&rf, argv[1]) != RF_OK) {
 		printf("%s\n", rf_error);
+	} else {
+		resource_file_close(rf);
 	}
 	return 0;
 }
@@ -111,17 +113,13 @@ size_t fread_big(
 
 		// Perform the big endian swap. However this is only done
 		// on integer values (2, 3 & 4 bytes).
-		if (size == 2 || size == 4) {
+		if (size >= 2 && size <= 4) {
 			for (int i = 0; i < (size >> 1); ++i) {
 				uint8_t tmp = p[size - 1 - i];
 				p[size - 1 - i] = p[i];
 				p[i] = tmp;
 			}
-		} else if (size == 3) {
-			uint8_t tmp = p[0];
-			p[0] = p[2];
-			p[2] = tmp;
-		}
+		}	
 
 		// Advance to the next memory location.
 		ptr = (void *)((uintptr_t)ptr + size);
@@ -179,7 +177,31 @@ RSRC_PARSE_ERROR:
 void resource_file_close(resource_file_t rf)
 {
 	if (rf) {
+#if defined(DEBUG_TEST)
+		printf("closing resource fork...\n");
+#endif
 		fclose(rf->handle);
+
+		// Step through each of the resources and free any allocated data pointers
+		// and names, before freeing the resources themselves.
+		for (int i = 0; i < rf->rsrc.resource_count; ++i) {
+#if defined(DEBUG_TEST)
+			printf("releasing resource %d '%s' data and name.\n", i, rf->rsrc.resources[i].name);
+#endif
+			free((void *)rf->rsrc.resources[i].data);
+			free((void *)rf->rsrc.resources[i].name);
+		}
+		free((void *)rf->rsrc.resources);
+
+		// Repeat the same for types. Free any type codes, and then free the types
+		// themselves
+		for (int i = 0; i <= rf->rsrc.type_count; ++i) {
+#if defined(DEBUG_TEST)
+			printf("releasing type %d '%s'\n", i, rf->rsrc.types[i].code);
+#endif
+			free((void *)rf->rsrc.types[i].code);
+		}
+		free((void *)rf->rsrc.types);
 	}
 }
 
