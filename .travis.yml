@@ -5,6 +5,7 @@ script:
 git:
     submodules: false
 before_install:
+    - sde -i 's/git@github.com:/https:\/\/github.com\//' libEncoding/.gitmodules
     - sed -i 's/git@github.com:/https:\/\/github.com\//' .gitmodules
     - git submodule update --init --recursive
 
