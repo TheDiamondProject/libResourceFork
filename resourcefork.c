@@ -203,42 +203,46 @@ int resource_file_open(resource_file_t *rf, const char *restrict path)
 		return RF_FILE;
 	}
 
-	// File is open and known good. Start setting up the structure
-	// and allocations.
-	*rf = calloc(1, sizeof(**rf));
-	(*rf)->path = calloc(strlen(path) + 1, 1);
-
 	// Load the contents of the file in to the buffer.
-	struct data_buffer *buffer = calloc(1, sizeof(*buffer));
 	fseek(handle, 0L, SEEK_END);
-	buffer->size = ftell(handle);
-	buffer->data = calloc(1, buffer->size);
-	buffer->pos = 0;
+	ssize_t size = ftell(handle);
+	void *data = calloc(1, size);
 	fseek(handle, 0L, SEEK_SET);
 
-#if defined(DEBUG_TEST)
-	printf("loading resource fork into buffer (%p): %d bytes...\n", buffer, buffer->size);
-#endif
-
-	if (fread(buffer->data, 1, buffer->size, handle) != buffer->size) {
-#if defined(DEBUG_TEST)
-		printf("failed to load resource fork\n");
-#endif
+	if (fread(data, 1, size, handle) != size) {
 		fclose(handle);
 		resource_file_free(*rf);
 		return RF_FILE;
 	}
 
-#if defined(DEBUG_TEST)
-	printf("finishing resource fork load\n");
-#endif
-
 	fclose(handle);
-	(*rf)->handle = buffer;
 
-	// Copy the file path string into it's new home. We will/may need
-	// it later.
+	// Parse and load the resource fork.
+	if ((err = resource_file_create(rf, data, size)) != RF_OK) {
+		return err;
+	}
+
+	// Make sure the path is copied into the resource file instance.
+	(*rf)->path = calloc(strlen(path) + 1, 1);
 	strncpy((void *)(*rf)->path, path, strlen(path));
+	return err;
+}
+
+int resource_file_create(resource_file_t *rf, void *restrict data, ssize_t size)
+{
+	int err = 0;
+	assert(rf != NULL);
+
+	// Setup a data buffer to represent and contain the data.
+	struct data_buffer *buffer = calloc(1, sizeof(*buffer));
+	buffer->data = data;
+	buffer->size = size;
+	buffer->pos = 0;
+
+	// File is open and known good. Start setting up the structure
+	// and allocations.
+	*rf = calloc(1, sizeof(**rf));
+	(*rf)->handle = buffer;
 
 	// A major part of opening the file is parsing the resource map.
 	// If the resource map is invalid, then we can infer that the

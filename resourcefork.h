@@ -21,6 +21,7 @@
  */
 
 #include <stdint.h>
+#include <sys/types.h>
 
 #if !defined(libResourceFork)
 #define libResourceFork
@@ -39,6 +40,7 @@ typedef struct resource_file *resource_file_t;
 
 // MARK: - Function Declarations
 int resource_file_open(resource_file_t *, const char *restrict);
+int resource_file_create(resource_file_t *, void *restrict, ssize_t);
 void resource_file_close(resource_file_t);
 void resource_file_free(resource_file_t);
 
