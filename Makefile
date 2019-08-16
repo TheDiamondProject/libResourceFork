@@ -31,7 +31,7 @@ clean:
 run-all-tests: tests
 	./tests
 	
-tests:
+tests: libResourceFork.a
 	$(CC) -o tests -I./ -DUNIT_TEST tests.c libUnit/unit.c libResourceFork.a
 
 .PHONY: dependancies
