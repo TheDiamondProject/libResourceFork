@@ -26,6 +26,11 @@ clean:
 	rm *.a *.o
 	make -C ./libEncoding clean
 
+.PHONY: run-all-tests
+run-all-tests: libResourceFork.a
+	$(CC) -o tests -I./ -DUNIT_TEST tests.c libUnit/unit.c libResourceFork.a
+	./tests
+
 .PHONY: dependancies
 dependancies:
 	make -C ./libEncoding
