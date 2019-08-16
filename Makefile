@@ -23,7 +23,8 @@ all: libResourceFork.a
 
 .PHONY: clean
 clean:
-	rm *.a *.o
+	- rm debug-test tests
+	- rm *.a *.o
 	make -C ./libEncoding clean
 
 .PHONY: run-all-tests
