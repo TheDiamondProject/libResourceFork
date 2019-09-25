@@ -38,7 +38,7 @@ char rf_error[1024] = {0};
 int main(int argc, const char **argv)
 {
 	resource_file_t rf = NULL;
-	if (resource_file_open(&rf, argv[1]) != RF_OK) {
+	if (resource_file_open(&rf, 0, argv[1]) != RF_OK) {
 		printf("%s\n", rf_error);
 	} else {
 		resource_file_close(rf);
@@ -201,7 +201,7 @@ size_t buffer_read(
 
 // MARK: - ResourceFork Loading
 
-int resource_file_open(resource_file_t *rf, const char *restrict path)
+int resource_file_open(resource_file_t *rf, enum resource_file_flags flags, const char *restrict path)
 {
 	int err = 0;
 	assert(rf != NULL);
@@ -231,7 +231,7 @@ int resource_file_open(resource_file_t *rf, const char *restrict path)
 	fclose(handle);
 
 	// Parse and load the resource fork.
-	if ((err = resource_file_create(rf, data, size)) != RF_OK) {
+	if ((err = resource_file_create(rf, flags, data, size)) != RF_OK) {
 		return err;
 	}
 
@@ -241,7 +241,7 @@ int resource_file_open(resource_file_t *rf, const char *restrict path)
 	return err;
 }
 
-int resource_file_create(resource_file_t *rf, void *restrict data, ssize_t size)
+int resource_file_create(resource_file_t *rf, enum resource_file_flags flags,  void *restrict data, ssize_t size)
 {
 	int err = 0;
 	assert(rf != NULL);
@@ -260,8 +260,10 @@ int resource_file_create(resource_file_t *rf, void *restrict data, ssize_t size)
 	// A major part of opening the file is parsing the resource map.
 	// If the resource map is invalid, then we can infer that the
 	// file is not a resource file and thus should be ignored.
-	if ((err = resource_file_parse(*rf)) != RF_OK) {
-		goto RSRC_PARSE_ERROR;
+	if (!(flags & rf_no_parse)) {
+		if ((err = resource_file_parse(*rf)) != RF_OK) {
+			goto RSRC_PARSE_ERROR;
+		}	
 	}
 
 	// Successfully completed opening the resource fork.

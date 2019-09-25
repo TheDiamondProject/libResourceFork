@@ -38,9 +38,16 @@ typedef struct resource_file *resource_file_t;
 #define RF_TYPE 		4
 #define RF_RESOURCE 	5
 
+enum resource_file_flags
+{
+	// Prevent the resource fork from being parsed when opened / created.
+	// This exists predominantly for the purpose of unit testing.
+	rf_no_parse = (1 << 1),
+};
+
 // MARK: - Function Declarations
-int resource_file_open(resource_file_t *, const char *restrict);
-int resource_file_create(resource_file_t *, void *restrict, ssize_t);
+int resource_file_open(resource_file_t *, enum resource_file_flags, const char *restrict);
+int resource_file_create(resource_file_t *, enum resource_file_flags, void *restrict, ssize_t);
 void resource_file_close(resource_file_t);
 void resource_file_free(resource_file_t);
 
