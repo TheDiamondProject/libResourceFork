@@ -49,51 +49,64 @@ int main(int argc, const char **argv)
 
 // MARK: - ResourceFork Data Structures
 
-struct resource_fork_preamble {
-	uint32_t data_offset;
-	uint32_t map_offset;
-	uint32_t data_size;
-	uint32_t map_size;
+enum resource_fork_type
+{
+	resource_fork_standard,
+	resource_fork_extended,
+};
+
+struct resource_fork_preamble 
+{
+	uint64_t data_offset;
+	uint64_t map_offset;
+	uint64_t data_size;
+	uint64_t map_size;
 } __attribute__((packed));
 
-struct resource_fork_map {
+struct resource_fork_map 
+{
 	uint16_t flags;
-	uint16_t type_list_offset;
-	uint16_t name_list_offset;
+	uint64_t type_list_offset;
+	uint64_t name_list_offset;
 };
 
-struct resource_type {
+struct resource_type 
+{
 	const char *code;
-	uint16_t resource_count;
-	uint16_t resource_offset;
-	uint32_t resource_index;
+	uint64_t resource_count;
+	uint64_t resource_offset;
+	uint64_t resource_index;
 };
 
-struct resource {
-	int16_t id;
+struct resource 
+{
+	int64_t id;
 	const char *name;
 	uint8_t flags;
-	uint32_t data_offset;
-	uint32_t data_size;
+	uint64_t data_offset;
+	uint64_t data_size;
 	void *data;
 };
 
-struct resource_fork {
+struct resource_fork 
+{
 	struct resource_fork_preamble preamble;
 	struct resource_fork_map map;
-	uint16_t type_count;
-	uint32_t resource_count;
+	uint64_t type_count;
+	uint64_t resource_count;
 	struct resource_type *types;
 	struct resource *resources;
 };
 
-struct data_buffer {
+struct data_buffer 
+{
 	uint8_t *data;
 	ssize_t size;
 	off_t pos;
 };
 
 struct resource_file {
+	enum resource_fork_type type;
 	const char *path;
 	struct data_buffer *handle;
 	struct resource_fork rsrc;
@@ -159,8 +172,8 @@ size_t buffer_read_flags(
 		}
 
 		// Perform the big endian swap. However this is only done
-		// on integer values (2, 3 & 4 bytes).
-		if ((flags & F_ENDIAN) && (size >= 2 && size <= 4)) {
+		// on integer values (2, 3, 4 & 8 bytes).
+		if ((flags & F_ENDIAN) && ((size >= 2 && size <= 4) || size == 8)) {
 			for (int i = 0; i < (size >> 1); ++i) {
 				uint8_t tmp = p[size - 1 - i];
 				p[size - 1 - i] = p[i];
@@ -311,14 +324,55 @@ int resource_file_parse_preamble(
 	// is where we are located.
 	buffer_seek(rf->handle, 0L, SEEK_SET);
 
-	// Read out 4 'DLNG' values, directly into the preamble.
-	buffer_read(preamble, sizeof(uint32_t), 4, rf->handle);
+	// The first thing that needs to be done is to determine the type of resource
+	// fork that we're dealing with. To do this read out a 64-bit value and check
+	// its value. If the value is anything other than 1, then we know we are dealing
+	// with a standard resource fork.
+	uint64_t format_version = 0;
+	buffer_read(&format_version, sizeof(uint64_t), 1, rf->handle);
+
+	if (format_version == 1) {
 
 #if defined(DEBUG_TEST)
-	printf("data_offset: %08x\n", preamble->data_offset);
-	printf("map_offset: %08x\n", preamble->map_offset);
-	printf("data_size: %d\n", preamble->data_size);
-	printf("map_size: %d\n", preamble->map_size);
+		printf("Reading an Extended ResourceFork\n");
+#endif
+
+		// We're dealing with the extended ResourceFork, load the rest of the
+		// preamble as 64-bit integers
+		rf->type = resource_fork_extended;
+
+		uint64_t preamble_values[4] = { 0 };
+		buffer_read(preamble_values, sizeof(uint64_t), 4, rf->handle);
+
+		preamble->data_offset = preamble_values[0];
+		preamble->map_offset = preamble_values[1];
+		preamble->data_size = preamble_values[2];
+		preamble->map_size = preamble_values[3];
+	}
+	else {
+
+#if defined(DEBUG_TEST)
+		printf("Reading an Standard ResourceFork\n");
+#endif
+
+		// It is a standard resource fork. Load the preamble acording to spec.
+		rf->type = resource_fork_standard;
+
+		uint32_t preamble_values[4] = { 0 };
+		buffer_seek(rf->handle, 0L, SEEK_SET);
+		buffer_read(preamble_values, sizeof(uint32_t), 4, rf->handle);
+
+		preamble->data_offset = (uint64_t)preamble_values[0];
+		preamble->map_offset = (uint64_t)preamble_values[1];
+		preamble->data_size = (uint64_t)preamble_values[2];
+		preamble->map_size = (uint64_t)preamble_values[3];
+	}
+
+#if defined(DEBUG_TEST)
+	printf("data_offset: %016llx\n", preamble->data_offset);
+	printf("map_offset: %016llx\n", preamble->map_offset);
+	printf("data_size: %lld\n", preamble->data_size);
+	printf("map_size: %lld\n", preamble->map_size);
 #endif
 
 	// There isn't really a check that we can do here to ensure the validity of the values
@@ -333,16 +387,36 @@ int resource_file_parse_preamble(
 int resource_file_parse_map(
 	resource_file_t rf
 ) {
-	int err = 0;
-
 	// Jump to the start of the resource map. The start of the map has a copy of the preamble,
 	// which we can use as a "validation/checksum" for the resource file "integrity".
 	struct resource_fork_preamble chk_preamble = { 0 };
 	buffer_seek(rf->handle, rf->rsrc.preamble.map_offset, SEEK_SET);
-	if (buffer_read(&chk_preamble, sizeof(uint32_t), 4, rf->handle) != 4) {
-		snprintf(rf_error, sizeof(rf_error),
+
+	if (rf->type == resource_fork_extended) {
+		uint64_t preamble_values[4] = { 0 };
+		if (buffer_read(preamble_values, sizeof(uint64_t), 4, rf->handle) != 4) {
+			snprintf(rf_error, sizeof(rf_error),
 			"Error validating and checking resource fork preamble.");
-		return RF_PARSE;
+			return RF_PARSE;
+		}
+
+		chk_preamble.data_offset = preamble_values[0];
+		chk_preamble.map_offset = preamble_values[1];
+		chk_preamble.data_size = preamble_values[2];
+		chk_preamble.map_size = preamble_values[3];
+	}
+	else {
+		uint32_t preamble_values[4] = { 0 };
+		if (buffer_read(preamble_values, sizeof(uint32_t), 4, rf->handle) != 4) {
+			snprintf(rf_error, sizeof(rf_error),
+			"Error validating and checking resource fork preamble.");
+			return RF_PARSE;
+		}
+
+		chk_preamble.data_offset = preamble_values[0];
+		chk_preamble.map_offset = preamble_values[1];
+		chk_preamble.data_size = preamble_values[2];
+		chk_preamble.map_size = preamble_values[3];
 	}
 
 	if (
@@ -378,14 +452,36 @@ int resource_file_parse_map(
 		return RF_PARSE;
 	}
 
-	if (buffer_read(&rf->rsrc.map.type_list_offset, sizeof(uint16_t), 1, rf->handle) != 1) {
-		snprintf(rf_error, sizeof(rf_error), "Failed to read resource fork type list offset.");
-		return RF_PARSE;
+	if (rf->type == resource_fork_extended) {
+		// In the extended resource fork the offsets here are 8 bytes long 
+		// (64-bit values).
+		if (buffer_read(&rf->rsrc.map.type_list_offset, sizeof(uint64_t), 1, rf->handle) != 1) {
+			snprintf(rf_error, sizeof(rf_error), "Failed to read resource fork type list offset.");
+			return RF_PARSE;
+		}
+	
+		if (buffer_read(&rf->rsrc.map.name_list_offset, sizeof(uint64_t), 1, rf->handle) != 1) {
+			snprintf(rf_error, sizeof(rf_error), "Failed to read resource fork name list offset.");
+			return RF_PARSE;
+		}
 	}
-
-	if (buffer_read(&rf->rsrc.map.name_list_offset, sizeof(uint16_t), 1, rf->handle) != 1) {
-		snprintf(rf_error, sizeof(rf_error), "Failed to read resource fork name list offset.");
-		return RF_PARSE;
+	else {
+		// The standard resource fork is according to the spec and information
+		// listed above. However due to the actual storage of these values being
+		// increased to accomodate the extended resources, we need to read into
+		// a seperate variable first.
+		uint16_t tmp = 0;
+		if (buffer_read(&tmp, sizeof(uint16_t), 1, rf->handle) != 1) {
+			snprintf(rf_error, sizeof(rf_error), "Failed to read resource fork type list offset.");
+			return RF_PARSE;
+		}
+		rf->rsrc.map.type_list_offset = tmp;
+	
+		if (buffer_read(&tmp, sizeof(uint16_t), 1, rf->handle) != 1) {
+			snprintf(rf_error, sizeof(rf_error), "Failed to read resource fork name list offset.");
+			return RF_PARSE;
+		}
+		rf->rsrc.map.name_list_offset = tmp;
 	}
 
 	// For now we are not handling compressed resource forks. Check for compression and if
@@ -407,27 +503,36 @@ int resource_file_parse_map(
 int resource_file_parse_types(
 	resource_file_t rf
 ) {
-	int err = 0;
+	uint16_t tmp = 0;
 
 	// The first job is to seek to the appropriate location in the file.
 	buffer_seek(rf->handle, rf->rsrc.preamble.map_offset + rf->rsrc.map.type_list_offset, SEEK_SET);
-	printf("@ -> %ld\n", buffer_tell(rf->handle));
 
 	// The first value that we need to read tells us how many resource types exist within
 	// the resource fork. This will tell us how large the `types` array needs to be, and
 	// how many types we need to parse.
-	if (buffer_read(&rf->rsrc.type_count, sizeof(uint16_t), 1, rf->handle) != 1) {
-		snprintf(rf_error, sizeof(rf_error), "Failed to determine number of resource types.");
-		return RF_PARSE;
+	if (rf->type == resource_fork_extended) {
+		if (buffer_read(&rf->rsrc.type_count, sizeof(uint64_t), 1, rf->handle) != 1) {
+			snprintf(rf_error, sizeof(rf_error), "Failed to determine number of resource types.");
+			return RF_PARSE;
+		}
 	}
+	else {
+		if (buffer_read(&tmp, sizeof(uint16_t), 1, rf->handle) != 1) {
+			snprintf(rf_error, sizeof(rf_error), "Failed to determine number of resource types.");
+			return RF_PARSE;
+		}
+		rf->rsrc.type_count = tmp;
+	}
+	
 
 	// Allocate the memory needed to store the type information.
 	rf->rsrc.types = calloc(rf->rsrc.type_count + 1, sizeof(*rf->rsrc.types));
 	
 	// Now parse out each of the resource types
-	for (int i = 0; i <= rf->rsrc.type_count; ++i) {
+	for (uint64_t i = 0; i <= rf->rsrc.type_count; ++i) {
 		// The resource type code is the first thing to be read. This is 4 bytes long, and is
-		// _not_ endian specific.
+		// _not_ endian specific. The type code remains the same in the extended format.
 		int n = 0;
 		char raw_code[4] = { 0 };
 		if ((n = buffer_read_flags(raw_code, 1, 4, F_NONE, rf->handle)) != 4) {
@@ -436,20 +541,37 @@ int resource_file_parse_types(
 		}
 		rf->rsrc.types[i].code = utf8_from_macroman(raw_code, 4);
 
-		// The next two values are endian specific.
-		if (buffer_read(&rf->rsrc.types[i].resource_count, sizeof(uint16_t), 1, rf->handle) != 1) {
-			snprintf(rf_error, sizeof(rf_error), "Failed to read resource count for type.");
-			return RF_PARSE;
+		// The next two values are endian specific, and vary depending on the file
+		// being an extended or standard resource fork.
+		if (rf->type == resource_fork_extended) {
+			if (buffer_read(&rf->rsrc.types[i].resource_count, sizeof(uint64_t), 1, rf->handle) != 1) {
+				snprintf(rf_error, sizeof(rf_error), "Failed to read resource count for type.");
+				return RF_PARSE;
+			}
+	
+			if (buffer_read(&rf->rsrc.types[i].resource_offset, sizeof(uint64_t), 1, rf->handle) != 1) {
+				snprintf(rf_error, sizeof(rf_error), "Failed to read resource offset for type.");
+				return RF_PARSE;
+			}
 		}
-
-		if (buffer_read(&rf->rsrc.types[i].resource_offset, sizeof(uint16_t), 1, rf->handle) != 1) {
-			snprintf(rf_error, sizeof(rf_error), "Failed to read resource offset for type.");
-			return RF_PARSE;
+		else {
+			if (buffer_read(&tmp, sizeof(uint16_t), 1, rf->handle) != 1) {
+				snprintf(rf_error, sizeof(rf_error), "Failed to read resource count for type.");
+				return RF_PARSE;
+			}
+			rf->rsrc.types[i].resource_count = tmp;
+	
+			if (buffer_read(&tmp, sizeof(uint16_t), 1, rf->handle) != 1) {
+				snprintf(rf_error, sizeof(rf_error), "Failed to read resource offset for type.");
+				return RF_PARSE;
+			}
+			rf->rsrc.types[i].resource_offset = tmp;
 		}
+		
 
 #if defined(DEBUG_TEST)
 		// Display some information about the resource type.
-		printf("%6d '%s' %d resource(s), offset: %#02x\n",
+		printf("%lld '%s' %lld resource(s), offset: %#016llx\n",
 				i, rf->rsrc.types[i].code,
 				rf->rsrc.types[i].resource_count + 1, rf->rsrc.types[i].resource_offset);
 #endif
@@ -462,7 +584,7 @@ int resource_file_parse_types(
 int resource_file_parse_resources(
 	resource_file_t rf
 ) {
-	int err = 0;
+	uint16_t tmp = 0;
 	
 	// Before anything else is even attempted, we need to know how many resources
 	// there are in the resource fork in total. To do this we can add up all of the resource
@@ -473,7 +595,7 @@ int resource_file_parse_resources(
 	}
 
 #if defined(DEBUG_TEST)
-	printf("there are %d resources in the resource fork.\n", rf->rsrc.resource_count);
+	printf("there are %lld resources in the resource fork.\n", rf->rsrc.resource_count);
 #endif
 
 	// Allocate the required space for the resources.
@@ -493,93 +615,197 @@ int resource_file_parse_resources(
 
 		// Read each of the resources. This involves parsing out the appropriate data
 		// and inserting it into each of the allocated resource records.
-		for (int j = index_offset, k = 0; k <= rf->rsrc.types[i].resource_count; ++k, ++j, ++index_offset) {
-			if (buffer_read(&rf->rsrc.resources[j].id, sizeof(int16_t), 1, rf->handle) != 1) {
-				snprintf(rf_error, sizeof(rf_error), "Failed to read resource id.");
-				return RF_PARSE;
-			}
-			
-			uint16_t name_offset = 0;
-			if (buffer_read(&name_offset, sizeof(uint16_t), 1, rf->handle) != 1) {
-				snprintf(rf_error, sizeof(rf_error), "Failed to read resource name offset.");
-				return RF_PARSE;
-			}
-
-			if (buffer_read(&rf->rsrc.resources[j].flags, 1, 1, rf->handle) != 1) {
-				snprintf(rf_error, sizeof(rf_error), "Failed to read resource flags.");
-				return RF_PARSE;
-			}
-
-			uint8_t offset_raw[3] = { 0 };
-			if (buffer_read(offset_raw, sizeof(offset_raw), 1, rf->handle) != 1) {
-				snprintf(rf_error, sizeof(rf_error), "Failed to read resource data offset.");
-				return RF_PARSE;
-			}
-			rf->rsrc.resources[j].data_offset = (offset_raw[2] << 16) | (offset_raw[1] << 8) | (offset_raw[0]);
-			
-			// Now that all of the resource fields have been extracted, find and parse the name
-			// of the resource. However if the name offset is 0xFFFF, then we know there is no
-			// name assigned.
-			if (name_offset != UINT16_MAX) {
-				long cur_pos = buffer_tell(rf->handle);
-				buffer_seek(rf->handle, rf->rsrc.preamble.map_offset + rf->rsrc.map.name_list_offset + name_offset, SEEK_SET);
-			
-				uint8_t name_length = 0;
-				if (buffer_read(&name_length, 1, 1, rf->handle) != 1) {
-					snprintf(rf_error, sizeof(rf_error), "Failed to determine the length of the resource name.");
+		// Most values here are altered, in the extended resource fork, so this is implemented
+		// as two seperate loops for performance reasons.
+		if (rf->type == resource_fork_extended) {
+			for (uint64_t j = index_offset, k = 0; k <= rf->rsrc.types[i].resource_count; ++k, ++j, ++index_offset) {
+				if (buffer_read(&rf->rsrc.resources[j].id, sizeof(int64_t), 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource id.");
 					return RF_PARSE;
 				}
-
-				char raw_name[256] = { 0 };
-				if (buffer_read_flags(&raw_name, 1, name_length, F_NONE, rf->handle) != name_length) {
-					snprintf(rf_error, sizeof(rf_error), "Failed to read the resource name.");
+				
+				uint64_t name_offset = 0;
+				if (buffer_read(&name_offset, sizeof(uint64_t), 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource name offset.");
 					return RF_PARSE;
 				}
+	
+				if (buffer_read(&rf->rsrc.resources[j].flags, 1, 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource flags.");
+					return RF_PARSE;
+				}
+	
+				if (buffer_read(&rf->rsrc.resources[j].data_offset, sizeof(uint64_t), 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource data offset.");
+					return RF_PARSE;
+				}
+				
+				// Now that all of the resource fields have been extracted, find and parse the name
+				// of the resource. However if the name offset is 0xFFFFFFFFFFFFFFFF, then we know 
+				// there is no name assigned.
+				if (name_offset != UINT64_MAX) {
+					long cur_pos = buffer_tell(rf->handle);
+					buffer_seek(rf->handle, rf->rsrc.preamble.map_offset + rf->rsrc.map.name_list_offset + name_offset, SEEK_SET);
+				
+					uint8_t name_length = 0;
+					if (buffer_read(&name_length, 1, 1, rf->handle) != 1) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to determine the length of the resource name.");
+						return RF_PARSE;
+					}
+	
+					char raw_name[256] = { 0 };
+					if (buffer_read_flags(&raw_name, 1, name_length, F_NONE, rf->handle) != name_length) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to read the resource name.");
+						return RF_PARSE;
+					}
+	
+					rf->rsrc.resources[j].name = utf8_from_macroman(raw_name, name_length);
+					buffer_seek(rf->handle, cur_pos, SEEK_SET);
+				}
+	
+				// Finally try to load the data into memory for the resource.
+				// NOTE: Due to the format supporting 16EiB of data per resource,
+				// this should be converted to a memory mapped allocation so the
+				// data remains on disk until needed - however it's unlikely to
+				// be a problem for now.
+				//
+				// ☠️
+				{
+					// Seek to the beginning of the data and query the length of the
+					// data.
+					long cur_pos = buffer_tell(rf->handle);
+					buffer_seek(
+						rf->handle, 
+						rf->rsrc.resources[j].data_offset + rf->rsrc.preamble.data_offset, 
+						SEEK_SET
+					);
+		
+					uint64_t data_size = 0;
+					if (buffer_read(&data_size, sizeof(uint64_t), 1, rf->handle) != 1) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to read resource data size.");
+						return RF_PARSE;
+					}
+					rf->rsrc.resources[j].data_size = data_size;
+	
+					rf->rsrc.resources[j].data = malloc(rf->rsrc.resources[j].data_size);
+					if (buffer_read_flags(
+						rf->rsrc.resources[j].data, 
+						1, rf->rsrc.resources[j].data_size, 
+						F_NONE, rf->handle
+					) != rf->rsrc.resources[j].data_size) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to read resource data.");
+						return RF_PARSE;
+					}
+	
+					// Restore the old position.
+					buffer_seek(rf->handle, cur_pos, SEEK_SET);
+				}
 
-				rf->rsrc.resources[j].name = utf8_from_macroman(raw_name, name_length);
-				buffer_seek(rf->handle, cur_pos, SEEK_SET);
+				#if defined(DEBUG_TEST)
+				printf("  '%s' %lld: %s (%#016llx) [%lld/%lld] {%lld bytes}\n", 
+						rf->rsrc.types[i].code, rf->rsrc.resources[j].id, 
+						rf->rsrc.resources[j].name, rf->rsrc.resources[j].data_offset,
+						j, rf->rsrc.resource_count, rf->rsrc.resources[j].data_size);
+				#endif	
+	
+				// Skip over the next 4 bytes.
+				buffer_seek(rf->handle, 4L, SEEK_CUR);
 			}
 
-			// Finally try to load the data into memory for the resource.
-			{
-				// Seek to the beginning of the data and query the length of the
-				// data.
-				long cur_pos = buffer_tell(rf->handle);
-				buffer_seek(
-					rf->handle, 
-					rf->rsrc.resources[j].data_offset + rf->rsrc.preamble.data_offset, 
-					SEEK_SET
-				);
-
-				if (buffer_read(&rf->rsrc.resources[j].data_size, sizeof(uint32_t), 1, rf->handle) != 1) {
-					snprintf(rf_error, sizeof(rf_error), "Failed to read resource data size.");
-					return RF_PARSE;
-				}
-
-				rf->rsrc.resources[j].data = malloc(rf->rsrc.resources[j].data_size);
-				if (buffer_read_flags(
-					rf->rsrc.resources[j].data, 
-					1, rf->rsrc.resources[j].data_size, 
-					F_NONE, rf->handle
-				) != rf->rsrc.resources[j].data_size) {
-					snprintf(rf_error, sizeof(rf_error), "Failed to read resource data.");
-					return RF_PARSE;
-				}
-
-				// Restore the old position.
-				buffer_seek(rf->handle, cur_pos, SEEK_SET);
-			}
-
-#if defined(DEBUG_TEST)
-			printf("  '%s' %d: %s (%#06x) [%d/%d] {%d bytes}\n", 
-					rf->rsrc.types[i].code, rf->rsrc.resources[j].id, 
-					rf->rsrc.resources[j].name, rf->rsrc.resources[j].data_offset,
-					j, rf->rsrc.resource_count, rf->rsrc.resources[j].data_size);
-#endif
-
-			// Skip over the next 4 bytes.
-			buffer_seek(rf->handle, 4L, SEEK_CUR);
 		}
+		else {
+			for (uint64_t j = index_offset, k = 0; k <= rf->rsrc.types[i].resource_count; ++k, ++j, ++index_offset) {
+				if (buffer_read(&tmp, sizeof(int16_t), 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource id.");
+					return RF_PARSE;
+				}
+				rf->rsrc.resources[j].id = (int16_t)tmp;
+				
+				uint16_t name_offset = 0;
+				if (buffer_read(&name_offset, sizeof(uint16_t), 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource name offset.");
+					return RF_PARSE;
+				}
+	
+				if (buffer_read(&rf->rsrc.resources[j].flags, 1, 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource flags.");
+					return RF_PARSE;
+				}
+	
+				uint8_t offset_raw[3] = { 0 };
+				if (buffer_read(offset_raw, sizeof(offset_raw), 1, rf->handle) != 1) {
+					snprintf(rf_error, sizeof(rf_error), "Failed to read resource data offset.");
+					return RF_PARSE;
+				}
+				rf->rsrc.resources[j].data_offset = (offset_raw[2] << 16) | (offset_raw[1] << 8) | (offset_raw[0]);
+				
+				// Now that all of the resource fields have been extracted, find and parse the name
+				// of the resource. However if the name offset is 0xFFFF, then we know there is no
+				// name assigned.
+				if (name_offset != UINT16_MAX) {
+					long cur_pos = buffer_tell(rf->handle);
+					buffer_seek(rf->handle, rf->rsrc.preamble.map_offset + rf->rsrc.map.name_list_offset + name_offset, SEEK_SET);
+				
+					uint8_t name_length = 0;
+					if (buffer_read(&name_length, 1, 1, rf->handle) != 1) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to determine the length of the resource name.");
+						return RF_PARSE;
+					}
+	
+					char raw_name[256] = { 0 };
+					if (buffer_read_flags(&raw_name, 1, name_length, F_NONE, rf->handle) != name_length) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to read the resource name.");
+						return RF_PARSE;
+					}
+	
+					rf->rsrc.resources[j].name = utf8_from_macroman(raw_name, name_length);
+					buffer_seek(rf->handle, cur_pos, SEEK_SET);
+				}
+	
+				// Finally try to load the data into memory for the resource.
+				{
+					// Seek to the beginning of the data and query the length of the
+					// data.
+					long cur_pos = buffer_tell(rf->handle);
+					buffer_seek(
+						rf->handle, 
+						rf->rsrc.resources[j].data_offset + rf->rsrc.preamble.data_offset, 
+						SEEK_SET
+					);
+		
+					uint32_t data_size = 0;
+					if (buffer_read(&data_size, sizeof(uint32_t), 1, rf->handle) != 1) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to read resource data size.");
+						return RF_PARSE;
+					}
+					rf->rsrc.resources[j].data_size = data_size;
+	
+					rf->rsrc.resources[j].data = malloc(rf->rsrc.resources[j].data_size);
+					if (buffer_read_flags(
+						rf->rsrc.resources[j].data, 
+						1, rf->rsrc.resources[j].data_size, 
+						F_NONE, rf->handle
+					) != rf->rsrc.resources[j].data_size) {
+						snprintf(rf_error, sizeof(rf_error), "Failed to read resource data.");
+						return RF_PARSE;
+					}
+	
+					// Restore the old position.
+					buffer_seek(rf->handle, cur_pos, SEEK_SET);
+				}
+
+				#if defined(DEBUG_TEST)
+				printf("  '%s' %lld: %s (%#016llx) [%lld/%lld] {%lld bytes}\n", 
+						rf->rsrc.types[i].code, rf->rsrc.resources[j].id, 
+						rf->rsrc.resources[j].name, rf->rsrc.resources[j].data_offset,
+						j, rf->rsrc.resource_count, rf->rsrc.resources[j].data_size);
+				#endif	
+	
+				// Skip over the next 4 bytes.
+				buffer_seek(rf->handle, 4L, SEEK_CUR);
+			}
+		}
+		
 	}	
 
 	return RF_OK;
@@ -670,10 +896,10 @@ int resource_file_get_resource_idx(
 	resource_file_t rf, 
 	int type, 
 	int resource, 
-	int16_t *id, 
+	int64_t *id, 
 	const char **name,
 	uint8_t *data,
-	uint32_t *size
+	uint64_t *size
 ) {
 	// Look up the type and then handle the resource index offset.
 	struct resource_type *type_ptr = &rf->rsrc.types[type];
@@ -696,10 +922,10 @@ int resource_file_get_resource_idx(
 int resource_file_get_resource(
 	resource_file_t rf, 
 	const char *type_code, 
-	int16_t id, 
+	int64_t id, 
 	const char **name,
 	uint8_t *data,
-	uint32_t *size
+	uint64_t *size
 ) {
 	struct resource_type *type_ptr = NULL;
 	struct resource *resource_ptr = NULL;

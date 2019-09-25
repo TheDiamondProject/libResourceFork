@@ -70,19 +70,19 @@ int resource_file_get_resource_idx(
 	resource_file_t rf, 
 	int type, 
 	int resource, 
-	int16_t *id, 
+	int64_t *id, 
 	const char **name,
 	uint8_t *data,
-	uint32_t *size
+	uint64_t *size
 );
 
 int resource_file_get_resource(
 	resource_file_t rf, 
 	const char *type_code, 
-	int16_t id, 
+	int64_t id, 
 	const char **name,
 	uint8_t *data,
-	uint32_t *size
+	uint64_t *size
 );
 
 #endif

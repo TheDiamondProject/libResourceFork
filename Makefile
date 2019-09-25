@@ -42,8 +42,13 @@ libResourceFork.a: dependancies resourcefork.o
 	$(AR) -r $@ resourcefork.o libEncoding/libEncoding.a
 
 debug-test: dependancies
-	$(CC) -o $@ -DDEBUG_TEST -I./ resourcefork.c libEncoding/libEncoding.a
+	$(CC) -Wall -Wpedantic -Werror -o $@ -DDEBUG_TEST -I./ resourcefork.c libEncoding/libEncoding.a
+	@echo ""
+	@echo "Standard ResourceFork"
 	./$@ ResourceFiles/SimpleFork.rsrc
+	@echo ""
+	@echo "Extended ResourceFork"
+	./$@ ResourceFiles/SimpleExtendedFork.rsrc
 
 %.o: %.c
-	$(CC) -c -I./ -o $@ $^
+	$(CC) -Wall -Wpedantic -Werror -std=c11 -c -I./ -o $@ $^
