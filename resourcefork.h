@@ -40,15 +40,40 @@ typedef struct resource_file *resource_file_t;
 
 enum resource_file_flags
 {
-	// Prevent the resource fork from being parsed when opened / created.
-	// This exists predominantly for the purpose of unit testing.
+	/* Prevent the resource fork from being parsed when opened / created.
+	 * This exists predominantly for the purpose of unit testing. */
 	rf_no_parse = (1 << 1),
 };
 
 // MARK: - Function Declarations
+
+/* Open a resource file, and loads into the provided `resource_file_t`.
+ *
+ * - Param: A refernece to a resource_file_t structure that will hold all information
+ *			about the loaded resource file.
+ * - Param: A set of configuration flags to influence how the resource file is loaded.
+ * - Param: The path to the resource file on disk to be opended.
+ *
+ * - Return: A status code regarding the result of opening the resource fork. */
 int resource_file_open(resource_file_t *, enum resource_file_flags, const char *restrict);
+
+/* Create a new resource file instance in memory, using the data provided.
+ * This doesn't create a resource fork on disk, but rather is used by
+ * `resource_file_open(...)` to setup the `resource_file_t` instance.
+ *
+ * - Param: A reference to a resource_file_t structure that will hold all information
+ * 			about the loaded resource file.
+ * - Param:	A set of configuration flags to influence how the resource file is loaded.
+ * - Param: A pointer to the raw resource fork data.
+ * - Param: An indicator of how many bytes the data consists of.
+ *
+ * - Return: A status code regarding the result of creating the resource fork. */
 int resource_file_create(resource_file_t *, enum resource_file_flags, void *restrict, ssize_t);
+
+/* Close and deallocate all resources related to the given resource_file_t. */
 void resource_file_close(resource_file_t);
+
+/* Free the memory used by the resource file. */
 void resource_file_free(resource_file_t);
 
 int resource_file_parse(resource_file_t);
