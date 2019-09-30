@@ -37,12 +37,17 @@ typedef struct resource_file *resource_file_t;
 #define RF_COMPRESSED	3
 #define RF_TYPE 		4
 #define RF_RESOURCE 	5
+#define RF_MISSING_PATH	6
+#define RF_WRITE		7
 
 enum resource_file_flags
 {
 	/* Prevent the resource fork from being parsed when opened / created.
 	 * This exists predominantly for the purpose of unit testing. */
 	rf_no_parse = (1 << 1),
+
+	/* Force the extended resource fork format to be used when saving the file */
+	rf_save_extended = (1 << 2),
 };
 
 // MARK: - Function Declarations
@@ -69,6 +74,8 @@ int resource_file_open(resource_file_t *, enum resource_file_flags, const char *
  *
  * - Return: A status code regarding the result of creating the resource fork. */
 int resource_file_create(resource_file_t *, enum resource_file_flags, void *restrict, ssize_t);
+
+int resource_file_save(resource_file_t, enum resource_file_flags, const char *restrict);
 
 /* Close and deallocate all resources related to the given resource_file_t. */
 void resource_file_close(resource_file_t);
