@@ -41,7 +41,7 @@ int main(int argc, const char **argv)
 	if (resource_file_open(&rf, 0, argv[1]) != RF_OK) {
 		printf("%s\n", rf_error);
 	} else {
-		resource_file_save(rf, 0, "/tmp/test-save.rsrc");
+		resource_file_save(rf, rf_save_extended, "/tmp/test-save.rsrc");
 		resource_file_close(rf);
 	}
 	return 0;
@@ -51,7 +51,9 @@ int main(int argc, const char **argv)
 // MARK: - ResourceFork Constants
 
 #define STANDARD_RESOURCE_TYPE_LENGTH	(8L)
+#define EXTENDED_RESOURCE_TYPE_LENGTH	(20L)
 #define STANDARD_RESOURCE_LENGTH		(12L)
+#define EXTENDED_RESOURCE_LENGTH		(29L)
 
 // MARK: - ResourceFork Data Structures
 
@@ -1091,7 +1093,7 @@ int standard_resource_file_save(resource_file_t rf, FILE *stream)
 	uint32_t data_offset = 0x100;
 	uint32_t data_size = 0;
 	uint32_t map_offset = 0;
-	// uint32_t map_size = 0;
+	uint32_t map_size = 0;
 
 	// The first aspect of the resource file to save is the preamble. However,
 	// we don't actually know all of the details yet. The details we do not yet
@@ -1341,7 +1343,7 @@ int standard_resource_file_save(resource_file_t rf, FILE *stream)
 	// Finally we need to write out the preamble values that we calculated earlier,
 	// and finish the calculation for the resource map. First write out the main
 	// preamble...
-	uint32_t map_size = ftell(stream) - map_offset;
+	map_size = ftell(stream) - map_offset;
 
 	fseek(stream, sizeof(uint32_t), SEEK_SET);
 	if (file_write(&map_offset, sizeof(uint32_t), 1, stream) != 1) {
@@ -1387,5 +1389,299 @@ int standard_resource_file_save(resource_file_t rf, FILE *stream)
 
 int extended_resource_file_save(resource_file_t rf, FILE *stream)
 {
+	uint8_t tmp8 = 0;
+	uint32_t tmp32 = 0;
+	uint64_t tmp64 = 0;
+
+	uint64_t data_offset = 0x100;
+	uint64_t data_size = 0;
+	uint64_t map_offset = 0;
+	uint64_t map_size = 0;
+
+	// This is an extended ResourceFork, so we need to write the format version
+	// field first.
+	tmp64 = 1;
+	if (file_write(&tmp64, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write preamble format version.\n");
+		return RF_WRITE;
+	}
+
+	// The first aspect of the resource file to save is the preamble. However,
+	// we don't actually know all of the details yet. The details we do not yet
+	// know are:
+	//	- map_offset (requires knowledge of data_size)
+	//	- data_size  (need to save data first)
+	// 	- map_size	 (need to save map first)
+	// We can write the data_offset, so we'll do that and then pad out with 0's.
+	// The data_offset will be 256 bytes from the beginning.
+	if (file_write(&data_offset, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write preamble data_offset.\n");
+		return RF_WRITE;
+	}
+
+	size_t pad_count = data_offset - (sizeof(uint64_t) * 2);
+	if (file_pad(0x00, pad_count, stream) != pad_count) {
+		fprintf(stderr, "Failed to pad preamble to required length.\n");
+		return RF_WRITE;
+	}
+
+	// At this point we can begin saving the resource data. For this we simply
+	// need to step through each of the resources, and record the offset in 
+	// which we are beginning to save them.
+	struct resource_type *type_ptr = NULL;
+	struct resource *resource_ptr = NULL;
+	for (uint64_t type_idx = 0; type_idx <= rf->rsrc.type_count; ++type_idx) {
+		type_ptr = &rf->rsrc.types[type_idx];
+		for (uint64_t res_idx = 0; res_idx <= type_ptr->resource_count; ++res_idx) {
+			resource_ptr = &rf->rsrc.resources[type_ptr->resource_index + res_idx];
+			
+			uint64_t offset = ftell(stream) - data_offset;
+
+			// First write the resource size to the stream, followed by the 
+			// contents of the resource. 
+			if (file_write(&resource_ptr->data_size, sizeof(uint64_t), 1, stream) != 1) {
+				fprintf(stderr, "Failed to correctly write resource data size.\n");
+				return RF_WRITE;
+			}
+
+			if (file_write_flags(resource_ptr->data, resource_ptr->data_size, 1, F_NONE, stream) != 1) {
+				fprintf(stderr, "Failed to correctly write resource data.\n");
+				return RF_WRITE;
+			}
+
+			// Store the data offset in the resource.
+			resource_ptr->data_offset = offset;
+
+#if defined(DEBUG_TEST)
+			printf("  - wrote resource '%s' %lld data at %016llx\n", 
+				type_ptr->code, resource_ptr->id, offset);
+#endif
+		}
+	}
+
+	// At this point we know both the map_offset and the data_size. However it
+	// is best to wait for completion of the resource map, before writing the
+	// preamble.
+	map_offset = ftell(stream);
+	data_size = map_offset - data_offset;
+
+	// This leads to setting up the resource map information. We should have 
+	// everything we need currently. The only complication is going to be the
+	// resource names.
+	// The first part of the resource fork is a clone of the preamble, used as
+	// a verification. Repeat what was done above, but omit the large padding.
+	if (file_write(&data_offset, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble data_offset.\n");
+		return RF_WRITE;
+	}
+
+	// Pad out by 3 extra fields worth of zeros to account for the future map_offset,
+	// data_size and map_size values.
+	pad_count = sizeof(uint64_t) * 3;
+	if (file_pad(0x00, pad_count, stream) != pad_count) {
+		fprintf(stderr, "Failed to pad resource map preamble to required length.\n");
+		return RF_WRITE;
+	}
+
+	// The next 6 bytes are used by the MacOS Resource Manager, and thus not 
+	// important to us here.
+	if (file_pad(0x00, 6, stream) != 6) {
+		fprintf(stderr, "Failed to write required bytes.\n");
+		return RF_WRITE;
+	}
+
+	if (file_write(&rf->rsrc.map.flags, sizeof(uint16_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map flags.\n");
+		return RF_WRITE;
+	}
+
+	// This save algorithm ensures that this value is _always_ 56. Update the
+	// value and then write it.
+	rf->rsrc.map.type_list_offset = 56;
+	if (file_write(&rf->rsrc.map.type_list_offset, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map type list offset.\n");
+		return RF_WRITE;
+	}
+
+	// We need to calculate the name list offset, but this is easily done. It is
+	// the type_list_offset + (type_count * sizeof(type_record)) + (resource_count * sizeof(resource_record))
+	rf->rsrc.map.name_list_offset = ((rf->rsrc.type_count + 1) * EXTENDED_RESOURCE_TYPE_LENGTH);
+	rf->rsrc.map.name_list_offset += (rf->rsrc.resource_count * EXTENDED_RESOURCE_LENGTH);
+	rf->rsrc.map.name_list_offset += rf->rsrc.map.type_list_offset + sizeof(uint64_t);
+	if (file_write(&rf->rsrc.map.name_list_offset, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map name list offset.\n");
+		return RF_WRITE;
+	}
+
+	// Next we can move on to writing out the actual resource metadata. This simply
+	// involves stepping through everything and writing out the appropriate information.
+	if (file_write(&rf->rsrc.type_count, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource type count.\n");
+		return RF_WRITE;
+	}
+
+	// Calculate the first resource offset.
+	uint64_t resource_offset = sizeof(uint64_t) + (rf->rsrc.type_count + 1) * EXTENDED_RESOURCE_TYPE_LENGTH;
+	for (uint64_t type_idx = 0; type_idx <= rf->rsrc.type_count; ++type_idx) {
+		type_ptr = &rf->rsrc.types[type_idx];
+
+		// Convert the type name into a MacRoman string.
+		size_t typecode_size = 4;
+		const char *macroman_typecode = macroman_from_utf8(type_ptr->code, &typecode_size);
+		if (file_write((void *)macroman_typecode, 1, 4, stream) != 4) {
+			fprintf(stderr, "Failed to write resource type code.\n");
+			return RF_WRITE;
+		}
+		free((void *)macroman_typecode);
+
+		// The number of resources - 1 associated with this type.
+		if (file_write(&type_ptr->resource_count, sizeof(uint64_t), 1, stream) != 1) {
+			fprintf(stderr, "Failed to write resource count.\n");
+			return RF_WRITE;
+		}
+
+		// The offset of the first resource from the start of the type list.
+		// After writing it, calculate the start of the first resource for the 
+		// next type.
+		if (file_write(&resource_offset, sizeof(uint64_t), 1, stream) != 1) {
+			fprintf(stderr, "Failed to write first resource offset.\n");
+			return RF_WRITE;
+		}
+		resource_offset += (type_ptr->resource_count + 1) * EXTENDED_RESOURCE_LENGTH;
+	}
+
+	uint64_t name_list_offset = 0;
+	for (uint64_t type_idx = 0; type_idx <= rf->rsrc.type_count; ++type_idx) {
+		type_ptr = &rf->rsrc.types[type_idx];
+		for (uint64_t res_idx = 0; res_idx <= type_ptr->resource_count; ++res_idx) {
+			resource_ptr = &rf->rsrc.resources[type_ptr->resource_index + res_idx];
+
+			// The first field to write is the Resource ID.
+			if (file_write(&resource_ptr->id, sizeof(uint64_t), 1, stream) != 1) {
+				fprintf(stderr, "Failed to write resource id.\n");
+				return RF_WRITE;
+			}
+
+			// The offset of the resource name in the name list.
+			// Determine the offset for the next name. To do this add the length
+			// of the name to the offset (up to 255 bytes), plus and additional 
+			// 1 byte for the length of the name. If the name is NULL then write
+			// the offset as 0xFFFF, to indicate no name.
+			if (resource_ptr->name) {
+				if (file_write(&name_list_offset, sizeof(uint64_t), 1, stream) != 1) {
+					fprintf(stderr, "Failed to write resource name offset.\n");
+					return RF_WRITE;
+				}
+				size_t len = 0;
+				free((void *)macroman_from_utf8(resource_ptr->name, &len));
+				name_list_offset += (len >= 0x100 ? 0xFF : len) + 1;
+			}
+			else {
+				tmp64 = 0xFFFFFFFFFFFFFFFF;
+				if (file_write(&tmp64, sizeof(uint64_t), 1, stream) != 1) {
+					fprintf(stderr, "Failed to write resource name offset.\n");
+					return RF_WRITE;
+				}
+			}
+
+			// The resource flags
+			if (file_write(&resource_ptr->flags, sizeof(uint8_t), 1, stream) != 1) {
+				fprintf(stderr, "Failed to write resource attributes.\n");
+				return RF_WRITE;
+			}
+
+			// Write the data offset for the resource.
+			if (file_write(&resource_ptr->data_offset, sizeof(uint64_t), 1, stream) != 1) {
+				fprintf(stderr, "Failed to write resource data offset.\n");
+				return RF_WRITE;
+			}
+
+			// The final field is the handle. This is an internal value from the
+			// ResourceManager in Classic MacOS, so just leave this as 0.
+			tmp32 = 0;
+			if (file_write(&tmp32, sizeof(uint32_t), 1, stream) != 1) {
+				fprintf(stderr, "Failed to write resource handle.\n");
+				return RF_WRITE;
+			}
+		}
+	}
+
+	// We now need to write out each of the names of the resources out to the 
+	// file.
+	for (uint64_t type_idx = 0; type_idx <= rf->rsrc.type_count; ++type_idx) {
+		type_ptr = &rf->rsrc.types[type_idx];
+		for (uint64_t res_idx = 0; res_idx <= type_ptr->resource_count; ++res_idx) {
+			resource_ptr = &rf->rsrc.resources[type_ptr->resource_index + res_idx];
+
+			// We only need to write a name if there is a name for the resource.
+			if (resource_ptr->name == NULL) {
+				continue;
+			}
+
+			// If the name is longer than 255 bytes, then just truncate the 
+			// excess.
+			size_t len = 0;
+			const char *name = macroman_from_utf8(resource_ptr->name, &len);
+			len = len >= 0x100 ? 0xFF : len;
+
+			tmp8 = (uint8_t)(len & 0xFF);
+			if (file_write(&tmp8, sizeof(uint8_t), 1, stream) != 1) {
+				fprintf(stderr, "Failed to write resource name length.\n");
+				return RF_WRITE;
+			}
+
+			if (file_write_flags((void *)name, sizeof(uint8_t), len, F_NONE, stream) != len) {
+				fprintf(stderr, "Failed to write resource name content.\n");
+				return RF_WRITE;
+			}
+
+			free((void *)name);
+		}
+	}
+
+	// Finally we need to write out the preamble values that we calculated earlier,
+	// and finish the calculation for the resource map. First write out the main
+	// preamble...
+	map_size = ftell(stream) - map_offset;
+
+	fseek(stream, sizeof(uint64_t) * 2, SEEK_SET);
+	if (file_write(&map_offset, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble map_offset.\n");
+		return RF_WRITE;
+	}
+
+	if (file_write(&data_size, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble data_size.\n");
+		return RF_WRITE;
+	}
+
+	if (file_write(&map_size, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble map_size.\n");
+		return RF_WRITE;
+	}
+
+	// ... and then the check preamble.
+	fseek(stream, map_offset, SEEK_SET);
+	if (file_write(&data_offset, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble map_offset.\n");
+		return RF_WRITE;
+	}
+
+	if (file_write(&map_offset, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble map_offset.\n");
+		return RF_WRITE;
+	}
+
+	if (file_write(&data_size, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble data_size.\n");
+		return RF_WRITE;
+	}
+
+	if (file_write(&map_size, sizeof(uint64_t), 1, stream) != 1) {
+		fprintf(stderr, "Failed to write resource map preamble map_size.\n");
+		return RF_WRITE;
+	}
+
+	// Everything successfully written!
 	return RF_OK;
 }
