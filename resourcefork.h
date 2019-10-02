@@ -83,7 +83,6 @@ void resource_file_close(resource_file_t);
 /* Free the memory used by the resource file. */
 void resource_file_free(resource_file_t);
 
-int resource_file_parse(resource_file_t);
 
 int resource_file_get_type_count(resource_file_t rf, int *count);
 
@@ -122,6 +121,15 @@ int resource_file_get_resource(
 	const char **name,
 	uint8_t *data,
 	uint64_t *size
+);
+
+int resource_file_add_resource(
+	resource_file_t rf,
+	const char *type_code,
+	int64_t id,
+	const char *name,
+	uint8_t *data,
+	uint64_t size
 );
 
 #endif

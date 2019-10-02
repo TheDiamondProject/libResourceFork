@@ -41,7 +41,7 @@ int main(int argc, const char **argv)
 	if (resource_file_open(&rf, 0, argv[1]) != RF_OK) {
 		printf("%s\n", rf_error);
 	} else {
-		resource_file_save(rf, rf_save_extended, "/tmp/test-save.rsrc");
+		// resource_file_save(rf, 0, "/tmp/test-save.rsrc");
 		resource_file_close(rf);
 	}
 	return 0;
@@ -209,6 +209,8 @@ size_t buffer_read(
 
 // MARK: - ResourceFork Loading
 
+int resource_file_parse(resource_file_t);
+
 int resource_file_open(resource_file_t *rf, enum resource_file_flags flags, const char *restrict path)
 {
 	int err = 0;
@@ -268,7 +270,7 @@ int resource_file_create(resource_file_t *rf, enum resource_file_flags flags,  v
 	// A major part of opening the file is parsing the resource map.
 	// If the resource map is invalid, then we can infer that the
 	// file is not a resource file and thus should be ignored.
-	if (!(flags & rf_no_parse)) {
+	if (!(flags & rf_no_parse) && data != NULL && size > 0) {
 		if ((err = resource_file_parse(*rf)) != RF_OK) {
 			goto RSRC_PARSE_ERROR;
 		}	
@@ -966,6 +968,90 @@ RESOURCE_FOUND:
 	return RF_OK;
 }
 
+int resource_file_add_resource(
+	resource_file_t rf,
+	const char *type_code,
+	int64_t id,
+	const char *name,
+	uint8_t *data,
+	uint64_t size
+) {
+	assert(rf != NULL);
+
+	// Do we already have a container for the type?
+	struct resource_type *type_ptr = NULL;
+	for (int type_idx = 0; rf->rsrc.types && type_idx <= rf->rsrc.type_count; ++type_idx) {
+		type_ptr = &rf->rsrc.types[type_idx];
+		if (strcmp(type_ptr->code, type_code) == 0) {
+			goto RESOURCE_TYPE_FOUND;
+		}
+	}
+
+	// We do not and thus need to create a new type. Expand the allocation
+	// space for a new type.
+    if (rf->rsrc.types) {
+        rf->rsrc.type_count++;
+        rf->rsrc.types = realloc(rf->rsrc.types, (rf->rsrc.type_count + 1) * sizeof(*rf->rsrc.types));
+    } else {
+        rf->rsrc.types = calloc(rf->rsrc.type_count + 1, sizeof(*rf->rsrc.types));
+    }
+
+	size_t type_code_len = strlen(type_code);
+	type_ptr = &rf->rsrc.types[rf->rsrc.type_count];
+	type_ptr->code = calloc(type_code_len + 1, 1);
+	strncpy((void *)type_ptr->code, type_code, type_code_len);
+
+	type_ptr->resource_offset = 0;
+	type_ptr->resource_count = 0xFFFFFFFFFFFFFFFF; // Indicate that we'll be adding the first value.
+	type_ptr->resource_index = rf->rsrc.resource_count; // The next available index is at the end of the list.
+
+RESOURCE_TYPE_FOUND:
+	
+	// TODO: We _should_ check that there isn't already an existing resource
+	// with this ID.
+    if (rf->rsrc.resources) {
+        rf->rsrc.resource_count++;
+        size_t resources_size = (rf->rsrc.resource_count + 1) * sizeof(*rf->rsrc.resources);
+        rf->rsrc.resources = realloc(rf->rsrc.resources, resources_size);
+    } else {
+        rf->rsrc.resources = calloc(rf->rsrc.resource_count + 1, sizeof(*rf->rsrc.resources));
+    }
+
+	
+	struct resource *resource_ptr = NULL;
+	if (type_ptr->resource_count == 0xFFFFFFFFFFFFFFFF) {
+		// Brand new resource type... We can just a new resource to the end of
+		// list.
+		resource_ptr = &rf->rsrc.resources[rf->rsrc.resource_count];
+		type_ptr->resource_count = 0;
+	}
+	else {
+		// Existing resource type... We need to modify the resource list and
+		// inject a new resource into the middle of it.
+		// Insert the new resource at the start of the resources for the type.
+		uintptr_t offset = type_ptr->resource_index;
+		size_t size = (rf->rsrc.resource_count + 1 - offset) * sizeof(*rf->rsrc.resources); 
+		memmove(rf->rsrc.resources + offset, rf->rsrc.resources + offset + 1, size);
+
+		type_ptr->resource_count++;
+	}
+
+	// Fill out information for the resource itself.
+	resource_ptr->id = id;
+    resource_ptr->name = NULL;
+	resource_ptr->flags = 0;
+	resource_ptr->data = data;
+	resource_ptr->data_size = size;
+
+    // Allocate space for the name and copy it in.
+    if (name) {
+        size_t name_len = strlen(name);
+        resource_ptr->name = calloc(name_len + 1, 1);
+        memcpy((char *)resource_ptr->name, name, name_len);
+    }
+
+	return RF_OK;
+}
 
 
 // MARK: - Resource File Saving
@@ -1055,8 +1141,6 @@ int resource_file_save(resource_file_t rf, enum resource_file_flags flags, const
 		return RF_MISSING_PATH;
 	}
 
-	printf("Saving to file: %s\n", save_path);
-
 	// Begin creating a new file. To do this we need to fetch a file handle to the
 	// file.
 	FILE *stream = fopen(save_path, "wb");
@@ -1134,7 +1218,7 @@ int standard_resource_file_save(resource_file_t rf, FILE *stream)
 				return RF_WRITE;
 			}
 
-			if (file_write_flags(resource_ptr->data, size, 1, F_NONE, stream) != 1) {
+			if (size > 0 && file_write_flags(resource_ptr->data, size, 1, F_NONE, stream) != 1) {
 				fprintf(stderr, "Failed to correctly write resource data.\n");
 				return RF_WRITE;
 			}
@@ -1197,7 +1281,7 @@ int standard_resource_file_save(resource_file_t rf, FILE *stream)
 	// We need to calculate the name list offset, but this is easily done. It is
 	// the type_list_offset + (type_count * sizeof(type_record)) + (resource_count * sizeof(resource_record))
 	rf->rsrc.map.name_list_offset = ((rf->rsrc.type_count + 1) * STANDARD_RESOURCE_TYPE_LENGTH);
-	rf->rsrc.map.name_list_offset += (rf->rsrc.resource_count * STANDARD_RESOURCE_LENGTH);
+	rf->rsrc.map.name_list_offset += ((rf->rsrc.resource_count + 1) * STANDARD_RESOURCE_LENGTH);
 	rf->rsrc.map.name_list_offset += rf->rsrc.map.type_list_offset + sizeof(uint16_t);
 	tmp16 = (uint16_t)(rf->rsrc.map.name_list_offset & 0xFFFF);
 	if (file_write(&tmp16, sizeof(uint16_t), 1, stream) != 1) {
@@ -1506,7 +1590,7 @@ int extended_resource_file_save(resource_file_t rf, FILE *stream)
 	// We need to calculate the name list offset, but this is easily done. It is
 	// the type_list_offset + (type_count * sizeof(type_record)) + (resource_count * sizeof(resource_record))
 	rf->rsrc.map.name_list_offset = ((rf->rsrc.type_count + 1) * EXTENDED_RESOURCE_TYPE_LENGTH);
-	rf->rsrc.map.name_list_offset += (rf->rsrc.resource_count * EXTENDED_RESOURCE_LENGTH);
+	rf->rsrc.map.name_list_offset += ((rf->rsrc.resource_count + 1) * EXTENDED_RESOURCE_LENGTH);
 	rf->rsrc.map.name_list_offset += rf->rsrc.map.type_list_offset + sizeof(uint64_t);
 	if (file_write(&rf->rsrc.map.name_list_offset, sizeof(uint64_t), 1, stream) != 1) {
 		fprintf(stderr, "Failed to write resource map name list offset.\n");
