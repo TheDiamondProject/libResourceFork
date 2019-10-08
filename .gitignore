@@ -3,5 +3,5 @@
 *.a
 ResourceFiles/second.rsrc
 debug-test
-test
+tests
 

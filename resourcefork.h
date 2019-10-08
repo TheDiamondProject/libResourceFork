@@ -37,14 +37,52 @@ typedef struct resource_file *resource_file_t;
 #define RF_COMPRESSED	3
 #define RF_TYPE 		4
 #define RF_RESOURCE 	5
+#define RF_MISSING_PATH	6
+#define RF_WRITE		7
+
+enum resource_file_flags
+{
+	/* Prevent the resource fork from being parsed when opened / created.
+	 * This exists predominantly for the purpose of unit testing. */
+	rf_no_parse = (1 << 1),
+
+	/* Force the extended resource fork format to be used when saving the file */
+	rf_save_extended = (1 << 2),
+};
 
 // MARK: - Function Declarations
-int resource_file_open(resource_file_t *, const char *restrict);
-int resource_file_create(resource_file_t *, void *restrict, ssize_t);
+
+/* Open a resource file, and loads into the provided `resource_file_t`.
+ *
+ * - Param: A refernece to a resource_file_t structure that will hold all information
+ *			about the loaded resource file.
+ * - Param: A set of configuration flags to influence how the resource file is loaded.
+ * - Param: The path to the resource file on disk to be opended.
+ *
+ * - Return: A status code regarding the result of opening the resource fork. */
+int resource_file_open(resource_file_t *, enum resource_file_flags, const char *restrict);
+
+/* Create a new resource file instance in memory, using the data provided.
+ * This doesn't create a resource fork on disk, but rather is used by
+ * `resource_file_open(...)` to setup the `resource_file_t` instance.
+ *
+ * - Param: A reference to a resource_file_t structure that will hold all information
+ * 			about the loaded resource file.
+ * - Param:	A set of configuration flags to influence how the resource file is loaded.
+ * - Param: A pointer to the raw resource fork data.
+ * - Param: An indicator of how many bytes the data consists of.
+ *
+ * - Return: A status code regarding the result of creating the resource fork. */
+int resource_file_create(resource_file_t *, enum resource_file_flags, void *restrict, ssize_t);
+
+int resource_file_save(resource_file_t, enum resource_file_flags, const char *restrict);
+
+/* Close and deallocate all resources related to the given resource_file_t. */
 void resource_file_close(resource_file_t);
+
+/* Free the memory used by the resource file. */
 void resource_file_free(resource_file_t);
 
-int resource_file_parse(resource_file_t);
 
 int resource_file_get_type_count(resource_file_t rf, int *count);
 
@@ -70,19 +108,28 @@ int resource_file_get_resource_idx(
 	resource_file_t rf, 
 	int type, 
 	int resource, 
-	int16_t *id, 
+	int64_t *id, 
 	const char **name,
 	uint8_t *data,
-	uint32_t *size
+	uint64_t *size
 );
 
 int resource_file_get_resource(
 	resource_file_t rf, 
 	const char *type_code, 
-	int16_t id, 
+	int64_t id, 
 	const char **name,
 	uint8_t *data,
-	uint32_t *size
+	uint64_t *size
+);
+
+int resource_file_add_resource(
+	resource_file_t rf,
+	const char *type_code,
+	int64_t id,
+	const char *name,
+	uint8_t *data,
+	uint64_t size
 );
 
 #endif
