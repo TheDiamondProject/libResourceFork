@@ -110,7 +110,7 @@ int resource_file_get_resource_idx(
 	int resource, 
 	int64_t *id, 
 	const char **name,
-	uint8_t *data,
+	uint8_t **data,
 	uint64_t *size
 );
 
@@ -119,7 +119,7 @@ int resource_file_get_resource(
 	const char *type_code, 
 	int64_t id, 
 	const char **name,
-	uint8_t *data,
+	uint8_t **data,
 	uint64_t *size
 );
 
