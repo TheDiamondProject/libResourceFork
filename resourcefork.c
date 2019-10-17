@@ -912,7 +912,7 @@ int resource_file_get_resource_idx(
 	int resource, 
 	int64_t *id, 
 	const char **name,
-	uint8_t *data,
+	uint8_t **data,
 	uint64_t *size
 ) {
 	// Look up the type and then handle the resource index offset.
@@ -938,7 +938,7 @@ int resource_file_get_resource(
 	const char *type_code, 
 	int64_t id, 
 	const char **name,
-	uint8_t *data,
+	uint8_t **data,
 	uint64_t *size
 ) {
 	struct resource_type *type_ptr = NULL;
@@ -963,6 +963,14 @@ RESOURCE_TYPE_FOUND:
 RESOURCE_FOUND:
 	if (name) {
 		*name = resource_ptr->name;
+	}
+
+	if (data) {
+		*data = resource_ptr->data;
+	}
+
+	if (size) {
+		*size = resource_ptr->data_size;
 	}
 
 	return RF_OK;
