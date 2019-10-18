@@ -39,6 +39,7 @@ typedef struct resource_file *resource_file_t;
 #define RF_RESOURCE 	5
 #define RF_MISSING_PATH	6
 #define RF_WRITE		7
+#define RF_DATA 		8
 
 enum resource_file_flags
 {
@@ -48,6 +49,12 @@ enum resource_file_flags
 
 	/* Force the extended resource fork format to be used when saving the file */
 	rf_save_extended = (1 << 2),
+
+	/* Do not load resource data into memory. This forces the resource file handle
+	 * to remain open and resource data will be read into memory when requested.
+	 * Additionally this requires the caller to supply a block of memory in which
+	 * the data will be read to. */
+	rf_no_data = (1 << 3),
 };
 
 // MARK: - Function Declarations
@@ -110,7 +117,6 @@ int resource_file_get_resource_idx(
 	int resource, 
 	int64_t *id, 
 	const char **name,
-	uint8_t **data,
 	uint64_t *size
 );
 
@@ -119,9 +125,23 @@ int resource_file_get_resource(
 	const char *type_code, 
 	int64_t id, 
 	const char **name,
-	uint8_t **data,
 	uint64_t *size
 );
+
+int resource_file_get_resource_data_idx(
+	resource_file_t rf, 
+	int type, 
+	int resource, 
+	void *data
+);
+
+int resource_file_get_resource_data(
+	resource_file_t rf, 
+	const char *type_code, 
+	int64_t id, 
+	void *data
+);
+
 
 int resource_file_add_resource(
 	resource_file_t rf,

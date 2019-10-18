@@ -29,6 +29,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 // MARK: - Global Variables
 
@@ -116,8 +117,10 @@ struct data_buffer
 struct resource_file {
 	enum resource_fork_type type;
 	const char *path;
+	FILE *file;
 	struct data_buffer *handle;
 	struct resource_fork rsrc;
+	bool load_data;
 };
 
 // MARK: - Data Buffer
@@ -238,13 +241,20 @@ int resource_file_open(resource_file_t *rf, enum resource_file_flags flags, cons
 		return RF_FILE;
 	}
 
-	fclose(handle);
-
 	// Parse and load the resource fork.
 	if ((err = resource_file_create(rf, flags, data, size)) != RF_OK) {
 		return err;
 	}
 
+	// Should the file be closed or kept for now?
+	if (flags & rf_no_data) {
+		// We have loaded no data into memory, so need to retain the file.
+		(*rf)->file = handle;
+	} else {
+		// We loaded data into memory so no longer need the file.
+		fclose(handle);
+	}
+	
 	// Make sure the path is copied into the resource file instance.
 	(*rf)->path = calloc(strlen(path) + 1, 1);
 	strncpy((void *)(*rf)->path, path, strlen(path));
@@ -275,6 +285,16 @@ int resource_file_create(resource_file_t *rf, enum resource_file_flags flags,  v
 			goto RSRC_PARSE_ERROR;
 		}	
 	}
+
+	// Should data be loaded into memory when the resource fork is 
+	// parsed?
+	(*rf)->load_data = (flags & rf_no_data) == 0;
+
+	// Destroy the buffer. We no longer need it and it occupys a lot of
+	// memory.
+	free((void *)buffer->data);
+	free((void *)buffer);
+	(*rf)->handle = NULL;
 
 	// Successfully completed opening the resource fork.
 	return RF_OK;
@@ -684,7 +704,7 @@ int resource_file_parse_resources(
 				// be a problem for now.
 				//
 				// ☠️
-				{
+				 {
 					// Seek to the beginning of the data and query the length of the
 					// data.
 					long cur_pos = buffer_tell(rf->handle);
@@ -700,17 +720,19 @@ int resource_file_parse_resources(
 						return RF_PARSE;
 					}
 					rf->rsrc.resources[j].data_size = data_size;
-	
-					rf->rsrc.resources[j].data = malloc(rf->rsrc.resources[j].data_size);
-					if (buffer_read_flags(
-						rf->rsrc.resources[j].data, 
-						1, rf->rsrc.resources[j].data_size, 
-						F_NONE, rf->handle
-					) != rf->rsrc.resources[j].data_size) {
-						snprintf(rf_error, sizeof(rf_error), "Failed to read resource data.");
-						return RF_PARSE;
+					
+					if (rf->load_data) {
+						rf->rsrc.resources[j].data = malloc(rf->rsrc.resources[j].data_size);
+						if (buffer_read_flags(
+							rf->rsrc.resources[j].data, 
+							1, rf->rsrc.resources[j].data_size, 
+							F_NONE, rf->handle
+						) != rf->rsrc.resources[j].data_size) {
+							snprintf(rf_error, sizeof(rf_error), "Failed to read resource data.");
+							return RF_PARSE;
+						}
 					}
-	
+					
 					// Restore the old position.
 					buffer_seek(rf->handle, cur_pos, SEEK_SET);
 				}
@@ -912,7 +934,6 @@ int resource_file_get_resource_idx(
 	int resource, 
 	int64_t *id, 
 	const char **name,
-	uint8_t **data,
 	uint64_t *size
 ) {
 	// Look up the type and then handle the resource index offset.
@@ -926,8 +947,12 @@ int resource_file_get_resource_idx(
 		*id = resource_ptr->id;
 	}
 
-	if (*name) {
+	if (name) {
 		*name = resource_ptr->name;
+	}
+
+	if (size) {
+		*size = resource_ptr->data_size;
 	}
 
 	return RF_OK;
@@ -938,7 +963,6 @@ int resource_file_get_resource(
 	const char *type_code, 
 	int64_t id, 
 	const char **name,
-	uint8_t **data,
 	uint64_t *size
 ) {
 	struct resource_type *type_ptr = NULL;
@@ -965,12 +989,95 @@ RESOURCE_FOUND:
 		*name = resource_ptr->name;
 	}
 
-	if (data) {
-		*data = resource_ptr->data;
-	}
-
 	if (size) {
 		*size = resource_ptr->data_size;
+	}
+
+	return RF_OK;
+}
+
+int resource_file_get_resource_data_idx(
+	resource_file_t rf, 
+	int type, 
+	int resource, 
+	void *data
+) {
+	// Look up the type and then handle the resource index offset.
+	struct resource_type *type_ptr = &rf->rsrc.types[type];
+	resource += type_ptr->resource_index;
+
+	// Look up the actual resource instance now
+	struct resource *resource_ptr = &rf->rsrc.resources[resource];
+
+	if (data) {
+		if (rf->load_data) {
+			memmove(data, resource_ptr->data, resource_ptr->data_size);
+		} else {
+			// Seek to the correct part of the file and then attempt to read the
+			// data into the supplied buffer.
+			long offset = resource_ptr->data_offset + rf->rsrc.preamble.data_offset;
+			if (rf->type == resource_fork_extended) {
+				offset += sizeof(uint64_t);
+			} else {
+				offset += sizeof(uint32_t);
+			}
+			fseek(rf->file, offset, SEEK_SET);
+
+			if (fread(data, 1, resource_ptr->data_size, rf->file) != resource_ptr->data_size) {
+				fprintf(stderr, "Failed to read resource data from file.\n");
+				return RF_DATA;
+			}
+		}
+	}
+
+	return RF_OK;
+}
+
+int resource_file_get_resource_data(
+	resource_file_t rf, 
+	const char *type_code, 
+	int64_t id, 
+	void *data
+) {
+	struct resource_type *type_ptr = NULL;
+	struct resource *resource_ptr = NULL;
+	for (int type_idx = 0; type_idx <= rf->rsrc.type_count; ++type_idx) {
+		type_ptr = &rf->rsrc.types[type_idx];
+		if (strcmp(type_ptr->code, type_code) == 0) {
+			goto RESOURCE_TYPE_FOUND;
+		}
+	}
+	return RF_TYPE;
+
+RESOURCE_TYPE_FOUND:
+	for (int res_idx = 0; res_idx <= type_ptr->resource_count; ++res_idx) {
+		resource_ptr = &rf->rsrc.resources[type_ptr->resource_index + res_idx];
+		if (resource_ptr->id == id) {
+			goto RESOURCE_FOUND;
+		}
+	}
+	return RF_RESOURCE;
+
+RESOURCE_FOUND:
+	if (data) {
+		if (rf->load_data) {
+			memmove(data, resource_ptr->data, resource_ptr->data_size);
+		} else {
+			// Seek to the correct part of the file and then attempt to read the
+			// data into the supplied buffer.
+			long offset = resource_ptr->data_offset + rf->rsrc.preamble.data_offset;
+			if (rf->type == resource_fork_extended) {
+				offset += sizeof(uint64_t);
+			} else {
+				offset += sizeof(uint32_t);
+			}
+			fseek(rf->file, offset, SEEK_SET);
+
+			if (fread(data, 1, resource_ptr->data_size, rf->file) != resource_ptr->data_size) {
+				fprintf(stderr, "Failed to read resource data from file.\n");
+				return RF_DATA;
+			}
+		}
 	}
 
 	return RF_OK;
